@@ -55,11 +55,11 @@ const namelist = many(name, .{ .min = 1, .separator = combine(.{
 })});
 
 const lvar = oneOf(.{
-    map(Expr, varNameConv, name),
     map(Expr, varPreExpConv, combine(.{ name, discard(opt(ws)), many(
         combine(.{
             ascii.char('.'), discard(opt(ws)), ref(lvar_ref)
-        }), .{ .min = 1 }) }))
+        }), .{ .min = 1 }) })),
+    map(Expr, varNameConv, name),
 });
 
 fn lvar_ref() Parser(Expr) {
@@ -71,8 +71,29 @@ fn varNameConv(arg: anytype) Expr {
 }
 
 fn varPreExpConv(arg: anytype) Expr {
-    std.log.info("{s}", .{arg});
-    return undefined;
+    var lhs = Expr { .Var = .{ .Name = arg[0] } };
+    
+    for (arg[1]) |rhs| {
+        var lhsDupe = alloc.create(Expr) catch unreachable;
+        lhsDupe.* = lhs;
+
+        var rhsDupe = alloc.create(Expr) catch unreachable;
+        rhsDupe.* = rhs;
+
+        // what's detected as var is actually a string
+        if (rhsDupe.* == .Var) {
+            const new = .{ .LiteralString = rhsDupe.Var.Name };
+            rhsDupe.* = new;
+        }
+
+        lhs = Expr {
+            .Index = .{
+                .lhs = lhsDupe,
+                .rhs = rhsDupe,
+            }
+        };
+    }
+    return lhs;
 }
 
 const varlist = many(lvar, .{ .min = 1, .separator = combine(.{
@@ -86,10 +107,6 @@ pub const FunctionCall = struct {
 
 pub const Var = union(enum) {
     Name: []const u8,
-    PrefixExpression: struct {
-        prefix: *const Var,
-        exp: *const Expr
-    },
 
     pub fn format(value: Var, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
         _ = fmt;
@@ -97,12 +114,18 @@ pub const Var = union(enum) {
         switch (value) {
             .Name => |varName| {
                 try writer.writeAll(varName);
-            },
-            .PrefixExpression => |prefix| {
-                try writer.print("{}[{}]", .{prefix.prefix, prefix.exp});
             }
         }
     }
+};
+
+const TableConstructor = struct {
+    pub const TableEntry = struct {
+        key: Expr,
+        value: Expr
+    };
+
+    entries: []const TableEntry
 };
 
 pub const Expr = union(enum) {
@@ -120,6 +143,11 @@ pub const Expr = union(enum) {
     FunctionDefinition: struct {
         stats: []Stat,
         argNames: [][]const u8
+    },
+    TableConstructor: TableConstructor,
+    Index: struct {
+        lhs: *const Expr,
+        rhs: *const Expr
     }
 };
 
@@ -157,12 +185,36 @@ const functiondef =
         mecha.string("end"), discard(opt(ws))
     });
 
+const field = combine(.{
+    ascii.char('['), ws, ref(exp_ref), ws, ascii.char(']'), ws,
+    ascii.char('='), ws,
+    ref(exp_ref)
+});
+
+const fieldsep = oneOf(.{ ascii.char(','), ascii.char(';') });
+
+const fieldlist = combine(.{
+    field,
+    many(combine(.{
+        ws, fieldsep, ws, field
+    }), .{}),
+    opt(fieldsep)
+});
+
+const tableconstructor =
+    combine(.{
+        ascii.char('{'), discard(opt(ws)),
+        opt(fieldlist),
+        discard(opt(ws)), ascii.char('}')
+    });
+
 const constexpr = oneOf(.{
     map(Expr, functionDefExprConv, functiondef),
     map(Expr, numberConv, number),
     map(Expr, booleanConv, boolean),
     map(Expr, stringConv, literalString),
     map(Expr, functionCallExprConv, functioncall),
+    map(Expr, tableConstructorConv, tableconstructor),
     map(Expr, parenthesisConv, combine(.{
         discard(opt(ws)), ascii.char('('), discard(opt(ws)), ref(exp_ref), discard(opt(ws)), ascii.char(')'), discard(opt(ws))
     })),
@@ -177,10 +229,27 @@ const exp = oneOf(.{
     constexpr
 });
 
+const compOp = map(Expr, binopConv, combine(.{
+    many(combine(.{
+        concatOp, discard(opt(ws)), mecha.asStr(oneOf(.{ mecha.string("=="), mecha.string("~=") }))
+    }), .{ .min = 1 }), discard(opt(ws)), ref(exp_ref)
+}));
+
+const concatOp = oneOf(.{
+    map(Expr, binopConv, combine(.{
+        many(combine(.{
+            binop2, discard(opt(ws)), mecha.asStr(mecha.string("..")), discard(opt(ws))
+        }), .{ .min = 1 }), ref(exp_ref)
+    })),
+    binop2
+});
+
 const binop2 = oneOf(.{
     map(Expr, binopConv, combine(.{
         many(combine(.{
-            binop1, discard(opt(ws)), mecha.asStr(oneOf(.{ mecha.string("*"), mecha.string("/") })), discard(opt(ws))
+            binop1, discard(opt(ws)), mecha.asStr(oneOf(.{
+                mecha.string("*"), mecha.string("/"), mecha.string("//"),
+                mecha.string("%") })), discard(opt(ws))
         }), .{ .min = 1 }), ref(binop2_ref)
     })),
     binop1
@@ -202,21 +271,6 @@ fn binop2_ref() Parser(Expr) {
 fn binop1_ref() Parser(Expr) {
     return binop1;
 }
-
-const compOp = map(Expr, binopConv, combine(.{
-    many(combine(.{
-        concatOp, discard(opt(ws)), mecha.asStr(oneOf(.{ mecha.string("=="), mecha.string("~=") }))
-    }), .{ .min = 1 }), discard(opt(ws)), ref(exp_ref)
-}));
-
-const concatOp = oneOf(.{
-    map(Expr, binopConv, combine(.{
-        many(combine(.{
-            binop2, discard(opt(ws)), mecha.asStr(mecha.string("..")), discard(opt(ws))
-        }), .{ .min = 1 }), ref(exp_ref)
-    })),
-    binop2
-});
 
 fn exp_ref() Parser(Expr) {
     return exp;
@@ -261,11 +315,36 @@ fn functionDefExprConv(arg: anytype) Expr {
     } };
 }
 
+fn tableConstructorConv(arg: anytype) Expr {
+    var entries = std.ArrayList(TableConstructor.TableEntry).init(alloc);
+    if (arg) |flist| {
+        // first entry
+        entries.append(.{
+            .key = flist[0][0],
+            .value = flist[0][1]
+        }) catch unreachable;
+
+        // other entries
+        for (flist[1]) |entry| {
+            entries.append(.{
+                .key = entry[0],
+                .value = entry[1]
+            }) catch unreachable;
+        }
+    }
+
+    return Expr {
+        .TableConstructor = .{
+            .entries = entries.toOwnedSlice()
+        }
+    };
+}
+
 fn binopConv(arg: anytype) Expr {
     const lhs = alloc.create(Expr) catch unreachable;
     // This handles operator precedence and left associativity
 
-    //std.log.debuh("arg = {d}, op = {s}", .{arg[0].len, arg[0][arg[0].len-1][1]});
+    //std.log.debug("arg = {d}, op = {s}", .{arg[0].len, arg[0][arg[0].len-1][1]});
     if (arg[0].len == 1) {
         //std.log.debug("lhs: {any}", .{arg[0][0][0]});
         lhs.* = arg[0][0][0];

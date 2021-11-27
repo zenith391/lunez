@@ -15,17 +15,19 @@ const LuaFunction = struct {
 const LuaTable = std.HashMap(LuaValue, LuaValue, ValueContext, std.hash_map.default_max_load_percentage);
 
 const ValueContext = struct {
-    pub fn hash(self: ValueContext, value: LuaValue) u64 {
-        _ = self;
-        return std.hash.Wyhash.hash(0, std.mem.asBytes(&value));
+    pub fn hash(_: ValueContext, value: LuaValue) u64 {
+        return switch (value) {
+            .String => |str| std.hash.Wyhash.hash(0, str),
+            else => std.hash.Wyhash.hash(0, std.mem.asBytes(&value))
+        };
     }
 
-    pub fn eql(self: ValueContext, a: LuaValue, b: LuaValue) bool {
-        _ = self;
-        return std.mem.eql(u8, std.mem.asBytes(&a), std.mem.asBytes(&b));
+    pub fn eql(_: ValueContext, a: LuaValue, b: LuaValue) bool {
+        return a.equals(b);
     }
 };
 
+// TODO: should be same type as LuaTable
 const LuaValues = std.StringHashMap(LuaValue);
 
 const LuaValue = union(enum) {
@@ -54,10 +56,12 @@ const LuaValue = union(enum) {
 
         return switch (self) {
             .Number => |num| num == other.Number,
-            .Boolean => |boolean| boolean == other.Boolean,
             .String => |str| std.mem.eql(u8, str, other.String),
+            .Boolean => |boolean| boolean == other.Boolean,
             .Nil => other == .Nil,
-            else => false
+            .CFunction => other.CFunction == self.CFunction,
+            .Function => other.Function.stats.ptr == self.Function.stats.ptr,
+            .Table => other.Table.unmanaged.metadata == self.Table.unmanaged.metadata,
         };
     }
 };
@@ -157,7 +161,7 @@ const LuaEnv = struct {
             callFrame.deinit();
             if (callFrame.messageHandler) |msgHandler| {
                 msgHandler(self, msg);
-                return error.LuaError; // convenience error to stop the current control flow
+                return ThrowError.LuaError; // convenience error to stop the current control flow
             }
         }
     }
@@ -220,6 +224,29 @@ pub fn resolveExpr(env: *LuaEnv, expr: parser.Expr) ResolveExpressionError!LuaVa
                 .argNames = def.argNames
             };
             return LuaValue { .Function = func };
+        },
+        .TableConstructor => |constructor| {
+            var table = LuaTable.init(env.allocator);
+            const entries = constructor.entries;
+            for (entries) |entry| {
+                const key = try resolveExpr(env, entry.key);
+                const value = try resolveExpr(env, entry.value);
+                
+                table.put(key, value) catch |err| switch (err) {
+                    error.OutOfMemory => return env.throwString("out of memory", .{})
+                };
+            }
+
+            return LuaValue { .Table = table };
+        },
+        .Index => |index| {
+            const lhs = try resolveExpr(env, index.lhs.*);
+            const rhs = try resolveExpr(env, index.rhs.*);
+            if (lhs == .Table) {
+                return lhs.Table.get(rhs) orelse nil;
+            } else {
+                return env.throwString("attempt to index a {s} value", .{ lhs.getTypeName() });
+            }
         },
         .BinaryOperation => |op| {
             const lhs = try resolveExpr(env, op.lhs.*);

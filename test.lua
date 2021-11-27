@@ -38,6 +38,14 @@ function test()
 	print("foo = ", foo)
 	print("5ème élement de la suite de Fibonacci = " .. tostring(fibonacci(5)))
 	print("5! = " .. tostring(factorial(5)))
+
+	local tab = {
+		["test"] = "a",
+		["test2"] = "b",
+	};
+
+	print("tab['test']", "=", tab.test)
+	print("tab['test2']", "=", tab.test2)
 end
 
 test()

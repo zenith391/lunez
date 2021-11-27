@@ -14,11 +14,25 @@ const ref = mecha.ref;
 const Allocator = std.mem.Allocator;
 var alloc: *Allocator = undefined;
 
+fn discardUntil(comptime endChar: u8) Parser(void) {
+    return struct {
+        fn func(_: *Allocator, s: []const u8) mecha.Error!mecha.Void {
+            const end = std.mem.indexOfScalar(u8, s, endChar) orelse s.len;
+            return mecha.Void { .value = {}, .rest = s[end..] };
+        }
+    }.func;
+}
+
 const ws = discard(many(oneOf(.{
     utf8.char(0x20), // space
     utf8.char(0x0A), // line feed
     utf8.char(0x0D), // carriage return
     utf8.char(0x09), // horizontal tab
+    combine(.{
+        ascii.char('-'), ascii.char('-'),
+        discardUntil('\n')
+
+    })
 }), .{ .collect = false }));
 
 const literalString = oneOf(.{
@@ -37,7 +51,10 @@ const literalString = oneOf(.{
 const stringChar = oneOf(.{
     utf8.range(0x0020, '"' - 1),
     utf8.range('"' + 1, '\\' - 1),
-    utf8.range('\\' + 1, 0x10FFFF)
+    utf8.range('\\' + 1, 0x10FFFF),
+    combine(.{
+        ascii.char('\\'), oneOf(.{ utf8.range('n', 'n'), utf8.range('r', 'r'), utf8.range('\\', '\\') })
+    })
 });
 
 const name = many(oneOf(.{
@@ -377,6 +394,7 @@ fn noOpConv(arg: void) Stat {
 
 fn definitionConv(arg: anytype) Stat {
     var vars = alloc.alloc(Var, arg[0].len) catch unreachable;
+    // TODO: handle Expr.Index and convert into Var.PrefixExpression
     for (arg[0]) |expr, i| vars[i] = expr.Var;
     return Stat {
         .Definition = .{

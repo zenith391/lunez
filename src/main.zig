@@ -2,6 +2,8 @@ const std = @import("std");
 const parser = @import("parser.zig");
 const Allocator = std.mem.Allocator;
 
+pub const log_level = .info;
+
 /// Value for the call stack to be limited at in order to avoid an actual stack overflow from whom Lunez doesn't know how to recover.
 /// It is implemented by throwing a 'stack overflow' error.
 /// Set to 0 to disable.
@@ -104,16 +106,11 @@ const LuaEnv = struct {
 
     /// Get the closest call scope's value with this name or if none, the global with this name, or if none, nil
     pub fn getVar(self: *LuaEnv, variable: parser.Var) LuaValue {
-        //std.log.scoped(.env).debug("Get var {}", .{variable});
+        std.log.scoped(.env).debug("Get var {}", .{variable});
         var i: usize = self.callStack.items.len;
         while (i > 0) : (i -= 1) {
             const frame = self.callStack.items[i - 1];
             if (frame.locals.get(variable.Name)) |value| {
-                // const parseVar = variable;
-                // if (value != .Nil and parseVar == .PrefixExpression) {
-                //     return resolveExpr(self, parseVar.PrefixExpression.exp.*);
-                // }
-
                 return value;
             }
         }
@@ -125,12 +122,12 @@ const LuaEnv = struct {
     }
 
     pub fn setUpvalue(self: *LuaEnv, variable: parser.Var, value: LuaValue) !void {
-        //std.log.scoped(.env).debug("Set upvalue {} to value {}", .{variable, value});
+        std.log.scoped(.env).debug("Set upvalue {} to value {}", .{variable, value});
         try self.upvalues.put(variable.Name, value);
     }
 
     pub fn setLocal(self: *LuaEnv, variable: parser.Var, value: LuaValue) !void {
-        //std.log.scoped(.env).debug("Set local {} to value {}", .{variable, value});
+        std.log.scoped(.env).debug("Set local {} to value {}", .{variable, value});
         var i: usize = self.callStack.items.len;
         while (i > 0) : (i -= 1) {
             const frame = &self.callStack.items[i - 1];
@@ -509,6 +506,10 @@ pub fn run(allocator: *Allocator, text: []const u8) !void {
     try env.setUpvalue(.{ .Name = "tostring" }, LuaValue { .CFunction = luaToString });
     try env.setUpvalue(.{ .Name = "error" }, LuaValue { .CFunction = luaCreateError });
     try env.setUpvalue(.{ .Name = "newTable" }, LuaValue { .CFunction = createTable });
+
+    var package = LuaTable.init(env.allocator);
+    try package.put(.{ .String = "path" }, .{ .String = "" }); // require(...) not even implemented
+    try env.setUpvalue(.{ .Name = "package" }, LuaValue { .Table = package });
 
     _ = evalLoop(&env) catch |err| switch (err) {
         error.LuaError => {},
